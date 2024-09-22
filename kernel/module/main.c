@@ -6,6 +6,8 @@
  */
 
 #define INCLUDE_VERMAGIC
+#define DEBUG
+#define pr_fmt(fmt) "main.c: " fmt
 
 #include <linux/export.h>
 #include <linux/extable.h>
@@ -1205,9 +1207,12 @@ static bool mod_mem_use_vmalloc(enum mod_mem_type type)
 
 static void *module_memory_alloc(unsigned int size, enum mod_mem_type type)
 {
-	if (mod_mem_use_vmalloc(type))
+	if (mod_mem_use_vmalloc(type)) {
+		pr_debug("\ttype %d uses vzalloc(), dont want it", type);
 		return vzalloc(size);
-	return module_alloc(size);
+	}
+	// return module_alloc(size);
+	return module_alloc_type(size, type);
 }
 
 static void module_memory_free(void *ptr, enum mod_mem_type type)
@@ -1511,7 +1516,9 @@ static void __layout_sections(struct module *mod, struct load_info *info, bool i
 		 * in this array; otherwise modify the text_size
 		 * finder in the two loops below
 		 */
-		{ SHF_EXECINSTR | SHF_ALLOC, ARCH_SHF_SMALL },
+		{ SHF_EXECINSTR | SHF_ALLOC, ARCH_SHF_SMALL | SHF_TRAMPO_IN | SHF_TRAMPO_OUT },
+		{ SHF_EXECINSTR | SHF_ALLOC | SHF_TRAMPO_IN, ARCH_SHF_SMALL },
+		{ SHF_EXECINSTR | SHF_ALLOC | SHF_TRAMPO_OUT, ARCH_SHF_SMALL },
 		{ SHF_ALLOC, SHF_WRITE | ARCH_SHF_SMALL },
 		{ SHF_RO_AFTER_INIT | SHF_ALLOC, ARCH_SHF_SMALL },
 		{ SHF_WRITE | SHF_ALLOC, ARCH_SHF_SMALL },
@@ -1519,6 +1526,8 @@ static void __layout_sections(struct module *mod, struct load_info *info, bool i
 	};
 	static const int core_m_to_mem_type[] = {
 		MOD_TEXT,
+		MOD_TEXT_IN,
+		MOD_TEXT_OUT,
 		MOD_RODATA,
 		MOD_RO_AFTER_INIT,
 		MOD_DATA,
@@ -1526,6 +1535,8 @@ static void __layout_sections(struct module *mod, struct load_info *info, bool i
 	};
 	static const int init_m_to_mem_type[] = {
 		MOD_INIT_TEXT,
+		MOD_INIT_TEXT_IN,
+		MOD_INIT_TEXT_OUT,
 		MOD_INIT_RODATA,
 		MOD_INVALID,
 		MOD_INIT_DATA,
@@ -1549,7 +1560,7 @@ static void __layout_sections(struct module *mod, struct load_info *info, bool i
 				continue;
 
 			s->sh_entsize = module_get_offset_and_type(mod, type, s, i);
-			pr_debug("\t%s\n", sname);
+			pr_debug("\t%s->%d\n", sname, m);
 		}
 	}
 }
@@ -1625,6 +1636,26 @@ bool __weak module_init_section(const char *name)
 bool __weak module_exit_section(const char *name)
 {
 	return strstarts(name, ".exit");
+}
+
+bool __weak module_in_section(const char *name)
+{
+	char *suffix = "_trampoline_in";
+	size_t suffix_len = strlen(suffix);
+	size_t name_len = strlen(name);
+
+	if (suffix_len > name_len) return false;
+	return !strncmp(name + name_len - suffix_len, suffix, suffix_len);
+}
+
+bool __weak module_out_section(const char *name)
+{
+	char *suffix = "_trampoline_out";
+	size_t suffix_len = strlen(suffix);
+	size_t name_len = strlen(name);
+
+	if (suffix_len > name_len) return false;
+	return !strncmp(name + name_len - suffix_len, suffix, suffix_len);
 }
 
 static int validate_section_offset(struct load_info *info, Elf_Shdr *shdr)
@@ -2225,24 +2256,27 @@ static int move_module(struct module *mod, struct load_info *info)
 	void *ptr;
 	enum mod_mem_type t = 0;
 	int ret = -ENOMEM;
-
+	
+	pr_debug("Memory type size:\n");
 	for_each_mod_mem_type(type) {
 		if (!mod->mem[type].size) {
 			mod->mem[type].base = NULL;
 			continue;
 		}
+		pr_debug("\ttype %d size %d aligned %d\n", type, mod->mem[type].size, 
+			PAGE_ALIGN(mod->mem[type].size));
 		mod->mem[type].size = PAGE_ALIGN(mod->mem[type].size);
 		ptr = module_memory_alloc(mod->mem[type].size, type);
 		/*
-                 * The pointer to these blocks of memory are stored on the module
-                 * structure and we keep that around so long as the module is
-                 * around. We only free that memory when we unload the module.
-                 * Just mark them as not being a leak then. The .init* ELF
-                 * sections *do* get freed after boot so we *could* treat them
-                 * slightly differently with kmemleak_ignore() and only grey
-                 * them out as they work as typical memory allocations which
-                 * *do* eventually get freed, but let's just keep things simple
-                 * and avoid *any* false positives.
+		 * The pointer to these blocks of memory are stored on the module
+		 * structure and we keep that around so long as the module is
+		 * around. We only free that memory when we unload the module.
+		 * Just mark them as not being a leak then. The .init* ELF
+		 * sections *do* get freed after boot so we *could* treat them
+		 * slightly differently with kmemleak_ignore() and only grey
+		 * them out as they work as typical memory allocations which
+		 * *do* eventually get freed, but let's just keep things simple
+		 * and avoid *any* false positives.
 		 */
 		kmemleak_not_leak(ptr);
 		if (!ptr) {
@@ -2397,6 +2431,21 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	ndx = find_sec(info, "__jump_table");
 	if (ndx)
 		info->sechdrs[ndx].sh_flags |= SHF_RO_AFTER_INIT;
+	
+	for (ndx = 0; ndx < info->hdr->e_shnum; ndx++) {
+		Elf_Shdr *shdr = &info->sechdrs[ndx];
+		pr_debug("info->sechdrs[%d]->sh_name: %s", ndx, info->secstrings + shdr->sh_name);
+		if (!(shdr->sh_flags & SHF_ALLOC))
+			continue;
+		if (module_in_section(info->secstrings + shdr->sh_name)) {
+			pr_debug("^trampoline_in^");
+			info->sechdrs[ndx].sh_flags |= SHF_TRAMPO_IN;
+		}
+		if (module_out_section(info->secstrings + shdr->sh_name)) {
+			pr_debug("^trampoline_out^");
+			info->sechdrs[ndx].sh_flags |= SHF_TRAMPO_OUT;
+		}
+	}
 
 	/*
 	 * Determine total sizes, and put offsets in sh_entsize.  For now
@@ -2464,6 +2513,8 @@ static void do_mod_ctors(struct module *mod)
 struct mod_initfree {
 	struct llist_node node;
 	void *init_text;
+	void *init_text_in;
+	void *init_text_out;
 	void *init_data;
 	void *init_rodata;
 };
@@ -2509,7 +2560,9 @@ static noinline int do_init_module(struct module *mod)
 		const struct module_memory *mod_mem = &mod->mem[type];
 		if (mod_mem->size) {
 			total_size += mod_mem->size;
-			if (type == MOD_TEXT || type == MOD_INIT_TEXT)
+			if (type == MOD_TEXT || type == MOD_INIT_TEXT || 
+				type == MOD_TEXT_IN || type == MOD_TEXT_OUT || 
+				type == MOD_INIT_TEXT_IN || type == MOD_INIT_TEXT_OUT)
 				text_size += mod_mem->size;
 		}
 	}
@@ -2521,6 +2574,8 @@ static noinline int do_init_module(struct module *mod)
 		goto fail;
 	}
 	freeinit->init_text = mod->mem[MOD_INIT_TEXT].base;
+	freeinit->init_text_in = mod->mem[MOD_INIT_TEXT_IN].base;
+	freeinit->init_text_out = mod->mem[MOD_INIT_TEXT_OUT].base;
 	freeinit->init_data = mod->mem[MOD_INIT_DATA].base;
 	freeinit->init_rodata = mod->mem[MOD_INIT_RODATA].base;
 
@@ -2560,6 +2615,10 @@ static noinline int do_init_module(struct module *mod)
 
 	ftrace_free_mem(mod, mod->mem[MOD_INIT_TEXT].base,
 			mod->mem[MOD_INIT_TEXT].base + mod->mem[MOD_INIT_TEXT].size);
+	ftrace_free_mem(mod, mod->mem[MOD_INIT_TEXT_IN].base,
+			mod->mem[MOD_INIT_TEXT_IN].base + mod->mem[MOD_INIT_TEXT_IN].size);
+	ftrace_free_mem(mod, mod->mem[MOD_INIT_TEXT_OUT].base,
+			mod->mem[MOD_INIT_TEXT_OUT].base + mod->mem[MOD_INIT_TEXT_OUT].size);
 	mutex_lock(&module_mutex);
 	/* Drop initial reference. */
 	module_put(mod);
@@ -3325,7 +3384,11 @@ struct module *__module_text_address(unsigned long addr)
 	if (mod) {
 		/* Make sure it's within the text section. */
 		if (!within_module_mem_type(addr, mod, MOD_TEXT) &&
-		    !within_module_mem_type(addr, mod, MOD_INIT_TEXT))
+			!within_module_mem_type(addr, mod, MOD_TEXT_IN) &&
+			!within_module_mem_type(addr, mod, MOD_TEXT_OUT) &&
+		    !within_module_mem_type(addr, mod, MOD_INIT_TEXT) &&
+		    !within_module_mem_type(addr, mod, MOD_INIT_TEXT_IN) &&
+		    !within_module_mem_type(addr, mod, MOD_INIT_TEXT_OUT))
 			mod = NULL;
 	}
 	return mod;

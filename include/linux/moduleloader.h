@@ -28,6 +28,7 @@ unsigned int arch_mod_section_prepend(struct module *mod, unsigned int section);
 /* Allocator used for allocating struct module, core sections and init
    sections.  Returns NULL on failure. */
 void *module_alloc(unsigned long size);
+void *module_alloc_type(unsigned long size, enum mod_mem_type type);
 
 /* Free memory returned from module_alloc. */
 void module_memfree(void *module_region);
