@@ -293,6 +293,8 @@ typedef struct elf64_phdr {
 #define SHF_EXECINSTR		0x4
 #define SHF_RELA_LIVEPATCH	0x00100000
 #define SHF_RO_AFTER_INIT	0x00200000
+#define SHF_TRAMPO_IN 0x00400000
+#define SHF_TRAMPO_OUT 0x00800000
 #define SHF_MASKPROC		0xf0000000
 
 /* special section indexes */

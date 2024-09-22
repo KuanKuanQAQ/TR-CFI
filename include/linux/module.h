@@ -323,10 +323,14 @@ struct mod_tree_node {
 
 enum mod_mem_type {
 	MOD_TEXT = 0,
+	MOD_TEXT_IN,
+	MOD_TEXT_OUT,
 	MOD_DATA,
 	MOD_RODATA,
 	MOD_RO_AFTER_INIT,
 	MOD_INIT_TEXT,
+	MOD_INIT_TEXT_IN,
+	MOD_INIT_TEXT_OUT,
 	MOD_INIT_DATA,
 	MOD_INIT_RODATA,
 
@@ -335,29 +339,43 @@ enum mod_mem_type {
 };
 
 #define mod_mem_type_is_init(type)	\
-	((type) == MOD_INIT_TEXT ||	\
-	 (type) == MOD_INIT_DATA ||	\
+	((type) == MOD_INIT_TEXT ||		\
+	 (type) == MOD_INIT_TEXT_IN ||	\
+	 (type) == MOD_INIT_TEXT_OUT ||	\
+	 (type) == MOD_INIT_DATA ||		\
 	 (type) == MOD_INIT_RODATA)
 
 #define mod_mem_type_is_core(type) (!mod_mem_type_is_init(type))
 
 #define mod_mem_type_is_text(type)	\
-	 ((type) == MOD_TEXT ||		\
-	  (type) == MOD_INIT_TEXT)
+	 ((type) == MOD_TEXT ||			\
+	  (type) == MOD_TEXT_IN || 		\
+	  (type) == MOD_TEXT_OUT || 	\
+	  (type) == MOD_INIT_TEXT || 	\
+	  (type) == MOD_INIT_TEXT_IN || \
+	  (type) == MOD_INIT_TEXT_OUT)
 
 #define mod_mem_type_is_data(type) (!mod_mem_type_is_text(type))
 
-#define mod_mem_type_is_core_data(type)	\
-	(mod_mem_type_is_core(type) &&	\
+#define mod_mem_type_is_core_data(type)		\
+	(mod_mem_type_is_core(type) &&			\
 	 mod_mem_type_is_data(type))
 
 #define for_each_mod_mem_type(type)			\
 	for (enum mod_mem_type (type) = 0;		\
 	     (type) < MOD_MEM_NUM_TYPES; (type)++)
 
-#define for_class_mod_mem_type(type, class)		\
-	for_each_mod_mem_type(type)			\
+#define for_class_mod_mem_type(type, class)	\
+	for_each_mod_mem_type(type)				\
 		if (mod_mem_type_is_##class(type))
+
+#define mod_mem_type_is_in(type)	\
+	((type) == MOD_TEXT_IN ||		\
+	 (type) == MOD_INIT_TEXT_IN)
+
+#define mod_mem_type_is_out(type)	\
+	((type) == MOD_TEXT_OUT ||		\
+	 (type) == MOD_INIT_TEXT_OUT)
 
 struct module_memory {
 	void *base;

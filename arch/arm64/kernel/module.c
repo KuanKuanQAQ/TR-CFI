@@ -6,7 +6,8 @@
  *
  * Author: Will Deacon <will.deacon@arm.com>
  */
-
+#include "linux/sizes.h"
+#define DEBUG
 #define pr_fmt(fmt) "Modules: " fmt
 
 #include <linux/bitops.h>
@@ -80,10 +81,14 @@ static int __init module_init_limits(void)
 	BUILD_BUG_ON(MODULES_VSIZE < SZ_2G);
 
 	if (!kaslr_enabled()) {
-		if (kernel_size < SZ_128M)
-			module_direct_base = kernel_end - SZ_128M;
-		if (kernel_size < SZ_2G)
-			module_plt_base = kernel_end - SZ_2G;
+		if (kernel_size < SZ_128M) {
+			// module_direct_base = kernel_end - SZ_128M;
+			module_direct_base = kernel_start;
+		}
+		if (kernel_size < SZ_2G) {
+			// module_plt_base = kernel_end - SZ_2G;
+			module_plt_base = kernel_start;
+		}
 	} else {
 		u64 min = kernel_start;
 		u64 max = kernel_end;
@@ -134,6 +139,102 @@ void *module_alloc(unsigned long size)
 					 GFP_KERNEL | __GFP_NOWARN,
 					 PAGE_KERNEL, 0, NUMA_NO_NODE,
 					 __builtin_return_address(0));
+	}
+
+	if (!p) {
+		pr_warn_ratelimited("%s: unable to allocate memory\n",
+				    __func__);
+	}
+
+	if (p && (kasan_alloc_module_shadow(p, size, GFP_KERNEL) < 0)) {
+		vfree(p);
+		return NULL;
+	}
+
+	/* Memory is intended to be executable, reset the pointer tag. */
+	return kasan_reset_tag(p);
+}
+
+
+void *module_alloc_type(unsigned long size, enum mod_mem_type type)
+{
+	void *p = NULL;
+	pr_debug("Arm64 module_alloc_type");
+	/*
+	 * Where possible, prefer to allocate within direct branch range of the
+	 * kernel such that no PLTs are necessary.
+	 */
+	if (module_direct_base) {
+		if (mod_mem_type_is_in(type)) {
+			pr_debug("\ttype %d uses: 0x%llx - 0x%llx", 
+				type, module_direct_base + SZ_64M, module_direct_base + SZ_128M);
+			p = __vmalloc_node_range(size, MODULE_ALIGN,
+						module_direct_base + SZ_64M,
+						module_direct_base + SZ_128M,
+						GFP_KERNEL | __GFP_NOWARN,
+						PAGE_KERNEL, 0, NUMA_NO_NODE,
+						__builtin_return_address(0));
+		} else if (mod_mem_type_is_out(type)) {
+			pr_debug("\ttype %d uses: 0x%llx - 0x%llx", 
+				type, module_direct_base + SZ_64M + SZ_32M, module_direct_base + SZ_128M);
+			p = __vmalloc_node_range(size, MODULE_ALIGN,
+						module_direct_base + SZ_64M + SZ_32M,
+						module_direct_base + SZ_128M,
+						GFP_KERNEL | __GFP_NOWARN,
+						PAGE_KERNEL, 0, NUMA_NO_NODE,
+						__builtin_return_address(0));
+		} else {
+			pr_debug("\ttype %d uses: 0x%llx - 0x%llx", 
+				type, module_direct_base, module_direct_base + SZ_64M);
+			p = __vmalloc_node_range(size, MODULE_ALIGN,
+						module_direct_base,
+						module_direct_base + SZ_64M,
+						GFP_KERNEL | __GFP_NOWARN,
+						PAGE_KERNEL, 0, NUMA_NO_NODE,
+						__builtin_return_address(0));
+		}
+		if (!p) {
+			pr_debug("\tmodule_direct_base failed");
+		}
+	}
+	if (!p && module_plt_base) {
+		if (mod_mem_type_is_in(type)) {
+			pr_debug("\ttype %d uses: 0x%llx - 0x%llx", 
+				type, module_plt_base + SZ_1G, module_plt_base + SZ_1G + SZ_512M);
+			p = __vmalloc_node_range(size, MODULE_ALIGN,
+						module_plt_base + SZ_1G,
+						module_plt_base + SZ_1G + SZ_512M,
+						GFP_KERNEL | __GFP_NOWARN,
+						PAGE_KERNEL, 0, NUMA_NO_NODE,
+						__builtin_return_address(0));
+		} else if (mod_mem_type_is_out(type)) {
+			pr_debug("\ttype %d uses: 0x%llx - 0x%llx", 
+				type, module_plt_base + SZ_1G + SZ_512M, module_plt_base + SZ_2G);
+			p = __vmalloc_node_range(size, MODULE_ALIGN,
+						module_plt_base + SZ_1G + SZ_512M,
+						module_plt_base + SZ_2G,
+						GFP_KERNEL | __GFP_NOWARN,
+						PAGE_KERNEL, 0, NUMA_NO_NODE,
+						__builtin_return_address(0));
+		} else {
+			pr_debug("\ttype %d uses: 0x%llx - 0x%llx", 
+				type, module_plt_base, module_plt_base + SZ_1G);
+			p = __vmalloc_node_range(size, MODULE_ALIGN,
+						module_plt_base,
+						module_plt_base + SZ_1G,
+						GFP_KERNEL | __GFP_NOWARN,
+						PAGE_KERNEL, 0, NUMA_NO_NODE,
+						__builtin_return_address(0));
+		}
+		// p = __vmalloc_node_range(size, MODULE_ALIGN,
+		// 			 module_plt_base,
+		// 			 module_plt_base + SZ_2G,
+		// 			 GFP_KERNEL | __GFP_NOWARN,
+		// 			 PAGE_KERNEL, 0, NUMA_NO_NODE,
+		// 			 __builtin_return_address(0));
+		if (!p) {
+			pr_debug("\tmodule_plt_base failed");
+		}
 	}
 
 	if (!p) {
