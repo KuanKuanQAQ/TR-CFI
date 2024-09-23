@@ -201,6 +201,9 @@ struct pt_regs {
 	/* Only valid for some EL1 exceptions. */
 	u64 lockdep_hardirqs;
 	u64 exit_rcu;
+
+	u64 xx;
+	u64 yy;
 };
 
 static inline bool in_syscall(struct pt_regs const *regs)

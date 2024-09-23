@@ -461,6 +461,16 @@ static int arch_build_bp_info(struct perf_event *bp,
 		return -EINVAL;
 	}
 
+	/* Mask */
+	if (attr->bp_mask) {
+ 		/* Mask */
+ 		// if (attr->bp_mask < 3 || attr->bp_mask > 31) return -EINVAL;
+ 		// if (attr->bp_addr & ((1 << attr->bp_mask) - 1)) return -EINVAL;
+ 		if (attr->bp_len != HW_BREAKPOINT_LEN_8) return -EINVAL;
+ 		hw->ctrl.len = ARM_BREAKPOINT_LEN_8;
+ 		hw->ctrl.mask = attr->bp_mask + 1;
+	}
+
 	/*
 	 * On AArch64, we only permit breakpoints of length 4, whereas
 	 * AArch32 also requires breakpoints of length 2 for Thumb.
